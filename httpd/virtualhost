@@ -1,0 +1,8 @@
+virtualhost VH_HOST {
+    vhRoot                  /home/VH_HOST/public_html/
+    configFile              /usr/local/lsws/conf/vhosts/detail/VH_HOST.conf
+    allowSymbolLink         1
+    enableScript            1
+    restrained              0
+    setUIDMode              2
+}
