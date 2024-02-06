@@ -13,29 +13,9 @@ index  {
     indexFiles              index.php
 }
 
-scripthandler  {
-    add                     lsapi:lsphp81 php
-}
-
 phpIniOverride  {
     php_value post_max_size = 500M
     php_value upload_max_filesize = 500M
-}
-
-extprocessor lsphp81 {
-    type                    lsapi
-    address                 uds://tmp/lshttpd/lsphp81.sock
-    maxConns                10
-    env                     PHP_LSAPI_CHILDREN=10
-    env                     LSAPI_AVOID_FORK=200M
-    initTimeout             60
-    retryTimeout            0
-    persistConn             1
-    respBuffer              0
-    autoStart               2
-    path                    lsphp81/bin/lsphp
-    extUser                 php_ext_user
-    extGroup                php_ext_user
 }
 
 context / {

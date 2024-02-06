@@ -1,13 +1,157 @@
-
+source ./colors.sh
+source ./defined.sh
+source ./utils.sh
+source ./sitecmd.sh
+# 安装面板
+function install_ols {
+    cd $run_path
+    #判断面板是否安装
+    if [ -f "$ols_root/bin/lswsctrl" ]; then
+        echoCC "检测到OpenLiteSpeed已安装"
+        return $?
+    fi
+    #检测虚拟机保存目录
+    if [ -d $vhs_root ]; then
+        echoCC "请确保没有${vhs_root}文件夹"
+        return $?
+    fi
+    #创建防火墙规则
+    firewall_rules_create
+    apt update -y
+    #安装所需工具
+    apt-get install socat cron curl gnupg unzip iputils-ping apt-transport-https ca-certificates software-properties-common -y
+    #创建所有站点保存目录
+    mkdir -p $vhs_root
+    #添加存储库
+    wget -O - https://repo.litespeed.sh | bash
+    #安装面板
+    apt install openlitespeed -y
+    #获取面板默认安装PHP版本
+    local php=$(ls $ols_root | grep -o -m 1 "lsphp[78][0-9]$")
+    #安装WordPress 的 PHP 扩展
+    if [ -n "$php" ] ; then
+        #wordpress 必须组件 lsphp74-redis lsphp74-memcached
+        apt install ${php}-imagick ${php}-curl ${php}-intl ${php}-opcache -y
+        #删除其他PHP
+        [ -f /usr/bin/php ]  && rm -f /usr/bin/php
+        #创建PHP软链接
+        ln -s $ols_root/$php/bin/php /usr/bin/php
+    fi
+    # 安装PHP 和 扩展
+    # apt install lsphp74 lsphp74-common lsphp74-intl lsphp74-curl lsphp74-opcache lsphp74-imagick lsphp74-mysql -y 
+    apt install lsphp81 lsphp81-common lsphp81-intl lsphp81-curl lsphp81-opcache lsphp81-imagick lsphp81-mysql lsphp81-memcached -y
+    #添加监听器
+    cat ./httpd/listener >> $ols_root/conf/httpd_config.conf
+    #添加SSL证书
+    cat ./httpd/example.crt > $ols_root/conf/example.crt
+    cat ./httpd/example.key > $ols_root/conf/example.key
+    # 备份默认站点 安全问题
+    mv $ols_root/Example/html $ols_root/Example/html.bak
+    # 重建一个空目录 防止服务器读取配置文件出错
+    mkdir $ols_root/Example/html
+    #下载自动备份脚本
+    mkdir -p $ols_root/backup
+    mv ./vm/github.sh $ols_root/backup/
+    mv ./vm/local.sh $ols_root/backup/
+    #安装 MariaDB
+    install_maria_db
+    #重新加载配置
+    service lsws force-reload
+    echoGC '面板管理账号/密码'
+    echo -ne "$SB"
+    cat $ols_root/adminpasswd | grep -oE admin.*
+    echo -ne "$ED"
+    echoGC '面板地址'
+    echoSB "https://$(query_public_ip):7080"
+}
+# 安装MariaDB
+function install_maria_db {
+    cd $run_path
+    #判断是否安装过MariaDB
+    if [ -f "/usr/bin/mariadb" ]; then
+        echoCC "检测到MariaDB已安装"
+        return $?
+    fi
+    #添加密钥
+    apt-key adv --fetch-keys 'https://mariadb.org/mariadb_release_signing_key.asc'
+    #添加仓库
+    sh -c "echo 'deb https://mirror.rackspace.com/mariadb/repo/11.1/$os_name $os_version main' >>/etc/apt/sources.list"
+    #开始安装
+    apt update && apt install mariadb-server -y
+    #重启防止出错
+    systemctl restart mariadb
+    #创建数据库管理员账号和密码
+    local root_usr=$(tr -dc 'a-zA-Z' </dev/urandom | head -c 8)
+    local root_pwd=$(random_str 12)
+    #设置账号密码
+    /usr/bin/mariadb -Nse "GRANT ALL PRIVILEGES ON *.* TO '$root_usr'@'%' IDENTIFIED BY '$root_pwd' WITH GRANT OPTION;"
+    /usr/bin/mariadb -Nse "flush privileges;"
+    echoGC "MySQL管理员账号密码"
+    echoSB "$root_usr / $root_pwd"
+    # 开启远程访问
+    sed -i 's/^bind-address\s*=\s*127.0.0.1/bind-address = 0.0.0.0/' /etc/mysql/mariadb.conf.d/50-server.cnf
+    systemctl restart mariadb
+}
+# 安装PHPMyAdmin
+function install_php_my_admin {
+    #判断面板是否安装
+    local ols=$(check_ols_exist)
+    if [ -n "$ols" ]; then
+        echoCC $ols
+        return $?
+    fi
+    #切换工作目录
+    local example=$ols_root/Example
+    cd $example
+    if [ -d "phpMyAdmin" ]; then
+        echoCC '检测到phpMyAdmin已安装!'
+        return $?
+    fi
+    #下载phpMyAdmin程序
+    wget -O phpMyAdmin.zip https://files.phpmyadmin.net/phpMyAdmin/4.9.10/phpMyAdmin-4.9.10-all-languages.zip
+    #解压文件
+    unzip phpMyAdmin.zip > /dev/null 2>&1
+    #删除文件
+    rm phpMyAdmin.zip
+    #重命名文件夹
+    mv phpMyAdmin-4.9.10-all-languages phpMyAdmin
+    #切换目录
+    cd phpMyAdmin
+    #创建临时目录 并设置权限
+    mkdir tmp && chmod 777 tmp
+    #创建Cookie密钥
+    keybs=$(random_str 64)
+    #修改配置文件1
+    sed -i "/\$cfg\['blowfish_secret'\]/s/''/'$keybs'/" config.sample.inc.php
+    #切换目录
+    cd libraries
+    #修改配置文件2
+    sed -i "/\$cfg\['blowfish_secret'\]/s/''/'$keybs'/" config.default.php
+    #导入sql文件
+    mariadb < $example/phpMyAdmin/sql/create_tables.sql
+    #添加访问路径
+    cat $run_path/vm/context | sed s/context_path/phpMyAdmin/g >> $ols_root/conf/vhosts/Example/vhconf.conf
+    #重新加载
+    service lsws force-reload
+    #systemctl restart lsws
+    #写入安装信息
+    echoGC "phpMyAdmin安装完成."
+    echoSB "phpMyAdmin地址: http://$(query_public_ip):8088/phpMyAdmin"
+    cd $run_path
+}
 # 创建站点
 function create_site {
+    cd $run_path
+    #判断面板是否安装
+    local ols=$(check_ols_exist)
+    if [[ -n $ols ]]; then
+        echoCC $ols
+        return $?
+    fi
     #验证域名
     verify_domain
     #检测LSWS配置文件
-    if [ ! -f $cf_lsws ]; then
-        echoRC "服务器致命错误."
-        exit 0
-    fi
+    [ ! -f $cf_lsws ] && echoRC "服务器致命错误." && exit 0
     #域名是否绑定到其他站点
     local is_domain=$(query_domain "$input_value")
     if [ -n "$is_domain" ]; then
@@ -29,20 +173,23 @@ function create_site {
         echoCC "数据库已存在."
         return $?
     fi
-    #定义站点根
-    local site_root=$vhs_root/$input_value
+    #定义站点文档根
+    local site_doc_root=$vhs_root/$input_value
     #创建网站目录
-    mkdir -p $site_root/{backup,logs,cert,$doc_folder}
+    mkdir -p $site_doc_root/{backup,logs,cert,$doc_folder}
     #添加SSL
-    cat ./httpd/example.crt > $site_root/cert/ssl.crt
-    cat ./httpd/example.key > $site_root/cert/ssl.key
+    cat ./httpd/example.crt > $site_doc_root/cert/ssl.crt
+    cat ./httpd/example.key > $site_doc_root/cert/ssl.key
     #创建网站配置目录
-    local cf_vhost=$ols_root/conf/vhosts/${input_value}.conf
+    local vhost_path=$ols_root/conf/vhosts/$input_value
+    mkdir -p $vhost_path
     #创建虚拟主机配置文件
-    cat ./vm/default | sed "s/replace_path/$input_value/" > $cf_vhost
+    cat ./vm/default | sed "s/replace_path/$input_value/" > $vhost_path/default
+    cat ./vm/vhconf.81 | sed "s/replace_path/$input_value/" | sed "s/php_ext_user/$ug_user/g" > $vhost_path/vhconf.81
+    #在主配置文件中指定虚拟主机配置信息
+    cat ./httpd/vhost | sed "s/\$host_name/$input_value/" | sed "s/\$VH_NAME/$input_value/g" >> $cf_lsws
     #添加网站端口
-    sed -i "/listener HTTPs* {/a map        $input_value $input_value" ./conf/listen/80.conf
-    sed -i "/listener HTTPs* {/a map        $input_value $input_value" ./conf/listen/443.conf
+    sed -i "/listener HTTPs* {/a map        $input_value $input_value" $cf_lsws
     #设置权限
     chown -R lsadm:$group $vhost_path
     #创建数据库和用户
@@ -53,10 +200,10 @@ function create_site {
     echo -ne "$BC是否安装WordPrss(y/N):$ED "
     read -a iswp
     if [ "$iswp" = "y" -o "$iswp" = "Y" ]; then
-        cd $site_root/$doc_folder
+        cd $site_doc_root/$doc_folder
         install_wp "db_name=$db_name" "db_user=$db_user" "db_pass=$db_pass"
     else
-        echo 'This a Temp Site.' >  $site_root/$doc_folder/index.php
+        echo 'This a Temp Site.' >  $site_doc_root/$doc_folder/index.php
     fi
     #创建用户组
     if ! getent group $db_name >/dev/null; then
@@ -67,10 +214,12 @@ function create_site {
         useradd -M -g $db_name $db_name
     fi
     #修改所有者
-    chown $ug_user:$ug_user $site_root
+    chown $ug_user:$ug_user $site_doc_root
     chmod 711 $site_doc_root
+    #切换工作目录
+    cd $site_doc_root
     #修改所有者
-    chown -R $ug_user:$group $site_root/$doc_folder/
+    chown -R $ug_user:$group $doc_folder/
     #修改目录权限
     find $doc_folder/ -type d -exec chmod 750 {} \;
     #修改文件权限
@@ -90,8 +239,6 @@ function create_site {
     echoSB "密码: ${db_pass}"
     input_value=''
 }
-
-
 # 重置面板账号密码
 function reset_ols_user_password {
     if [ ! -d $ols_root ]; then
@@ -230,22 +377,26 @@ function site_cmd {
 # 设置菜单
 function menu {
     while true; do
-        echo -e "${YC}1${ED}.${LG}添加一个站点${ED}"
-        echo -e "${YC}2${ED}.${LG}常用站点指令${ED}"
-        echo -e "${YC}3${ED}.${LG}重置面板用户密码${ED}"
-        echo -e "${YC}4${ED}.${LG}重置数据库管理员密码${ED}"
-        echo -e "${YC}5${ED}.${LG}临时开放数据库远程访问端口${ED}[${PC}重启服务器失效${ED}]"
-        echo -e "${YC}6${ED}.${LG}添加GITHUB账号${ED}"
+        echo -e "${YC}1${ED}.${LG}安装面板和数据库${ED}[${PC}必须${ED}]"
+        echo -e "${YC}2${ED}.${LG}安装PHPMyAdmin${ED}"
+        echo -e "${YC}3${ED}.${LG}添加一个站点${ED}"
+        echo -e "${YC}4${ED}.${LG}常用站点指令${ED}"
+        echo -e "${YC}5${ED}.${LG}重置面板用户密码${ED}"
+        echo -e "${YC}6${ED}.${LG}重置数据库管理员密码${ED}"
+        echo -e "${YC}7${ED}.${LG}临时开放数据库远程访问端口${ED}[${PC}重启服务器失效${ED}]"
+        echo -e "${YC}8${ED}.${LG}添加GITHUB账号${ED}"
         echo -e "${YC}e${ED}.${LG}退出${ED}"
         echo -ne "${BC}请选择: ${ED}"
         read -a num
         case $num in
-            1) create_site ;;
-            2) site_cmd ;;
-            3) reset_ols_user_password ;;
-            4) reset_db_admin_password ;;
-            5) iptables -A INPUT -p tcp --dport 3306 -j ACCEPT ;;
-            6) github_token ;;
+            1) install_ols ;;
+            2) install_php_my_admin ;;
+            3) create_site ;;
+            4) site_cmd ;;
+            5) reset_ols_user_password ;;
+            6) reset_db_admin_password ;;
+            7) iptables -A INPUT -p tcp --dport 3306 -j ACCEPT ;;
+            8) github_token ;;
             e) exit 0 ;;
             *) clear
         esac

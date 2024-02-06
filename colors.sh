@@ -38,3 +38,4 @@ function echoPC {
 function echoYC {
     echo -e "$YC${1}$ED"
 }
+
