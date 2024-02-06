@@ -1,5 +1,6 @@
 #!/bin/bash
 
+repo=https://raw.githubusercontent.com/mina998/test2/main
 # OpenLiteSpeed 默认安装目录
 run_path=$(pwd)
 ols_root=/usr/local/lsws
@@ -59,13 +60,20 @@ mariadb < ./phpMyAdmin/sql/create_tables.sql
 
 # -------LSWS Config----------------
 rm -rf $ols_root/Example/
-mkdir backup && mkdir conf/listen
+mkdir backup && mkdir conf/listen && mkir conf/vhosts/detail
 #下载备份脚本
 wget -P backup $repo/github.sh && chmod +x ./backup/github.sh
 wget -P backup $repo/local.sh && chmod +x ./backup/local.sh
 #下载证书文件
 curl -k $repo/httpd/example.crt > ./conf/example.crt
 curl -k $repo/httpd/example.key > ./conf/example.key
+# 下载配置文件
+wget -P conf/listen $repo/listen/80.conf
+wget -P conf/listen $repo/listen/443.conf
+wget -P conf/listen $repo/listen/8090.conf
+
+wget -P conf/vhosts $repo/httpd/phpmyadmin.conf 
+wget -P conf/vhosts/detail $repo/vm/phpmyadmin.conf
 # 删除默认配置项
 cf_lsws=$ols_root/conf/httpd_config.conf
 sed -i '/listener .*{/,/}/d; /virtual[hH]ost Example{/,/}/d' $cf_lsws
@@ -73,6 +81,7 @@ sed -i '/listener .*{/,/}/d; /virtual[hH]ost Example{/,/}/d' $cf_lsws
 echo -e "\n" >> $cf_lsws
 echo "include $ols_root/conf/listen/*.conf" >> $cf_lsws
 echo "include $ols_root/conf/vhosts/*.conf" >> $cf_lsws
+
 
 # echoGC "MySQL管理员账号密码"
 # echoSB "$root_usr / $root_pwd"
